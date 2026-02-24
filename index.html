@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base href="https://cdn.jsdelivr.net/gh/faralong/all@main/wwdd/">
+
+<style>
+html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: black;
+    overflow: hidden;
+}
+#background {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to top, #00395e, #004978);
+}
+canvas {
+    position: absolute;
+    inset: 0;
+}
+</style>
+
+<!-- Always use official JSZip CDN -->
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+</head>
+
+<body>
+<div id="background"></div>
+<canvas id="canvas"></canvas>
+
+<script>
+(async function(){
+
+console.log("Boot starting...");
+
+if (typeof JSZip === "undefined") {
+    console.error("JSZip failed to load.");
+    return;
+}
+
+const binParts = [
+    "parts_1.bin",
+    "parts_2.bin"
+];
+
+async function fetchAndCombineZip(parts) {
+    const buffers = await Promise.all(parts.map(async (url) => {
+        const res = await fetch(url);
+        console.log("Loaded:", url, res.status);
+        if (!res.ok) throw new Error("Failed loading " + url);
+        return res.arrayBuffer();
+    }));
+
+    const total = buffers.reduce((a,b)=>a+b.byteLength,0);
+    console.log("Combined size:", total);
+
+    const combined = new Uint8Array(total);
+    let offset = 0;
+
+    for (const buf of buffers) {
+        combined.set(new Uint8Array(buf), offset);
+        offset += buf.byteLength;
+    }
+
+    return combined;
+}
+
+function extractFilename(url){
+    try {
+        return new URL(url, location.href).pathname.split('/').pop();
+    } catch {
+        return url.split('/').pop();
+    }
+}
+
+try {
+
+    const zipBytes = await fetchAndCombineZip(binParts);
+    const zip = await JSZip.loadAsync(zipBytes);
+
+    const blobMap = {};
+
+    for (const [name, file] of Object.entries(zip.files)) {
+        if (file.dir) continue;
+        const blob = await file.async("blob");
+        blobMap[name] = URL.createObjectURL(blob);
+        console.log("Extracted:", name);
+    }
+
+    console.log("ZIP extraction complete.");
+
+    function rewriteURL(original) {
+
+        // NEVER touch gpx.json
+        if (original.includes("gpx.json")) {
+            return original;
+        }
+
+        // NEVER touch external GamePix CDN / Cloudfront
+        if (original.startsWith("https://d13m0wt5um9hyu.cloudfront.net")) {
+            return original;
+        }
+
+        const name = extractFilename(original);
+        return blobMap[name] || original;
+    }
+
+    // Intercept fetch
+    const originalFetch = window.fetch;
+    window.fetch = function(resource, init) {
+        if (typeof resource === "string") {
+            resource = rewriteURL(resource);
+        } else if (resource instanceof Request) {
+            resource = new Request(rewriteURL(resource.url), resource);
+        }
+        return originalFetch.call(this, resource, init);
+    };
+
+    // Intercept script src
+    const scriptDesc = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, "src");
+    Object.defineProperty(HTMLScriptElement.prototype, "src", {
+        set(value) {
+            scriptDesc.set.call(this, rewriteURL(value));
+        },
+        get: scriptDesc.get
+    });
+
+    // Intercept image src
+    const imgDesc = Object.getOwnPropertyDescriptor(Image.prototype, "src");
+    Object.defineProperty(Image.prototype, "src", {
+        set(value) {
+            imgDesc.set.call(this, rewriteURL(value));
+        },
+        get: imgDesc.get
+    });
+
+    // Intercept link href
+    const linkDesc = Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype, "href");
+    Object.defineProperty(HTMLLinkElement.prototype, "href", {
+        set(value) {
+            linkDesc.set.call(this, rewriteURL(value));
+        },
+        get: linkDesc.get
+    });
+
+    console.log("Loading GamePix tiny loader...");
+
+    // Load tiny-loader normally (GamePix expects this)
+    const loader = document.createElement("script");
+    loader.src = "tiny-loader.js"; // Will resolve from gpx.json
+    loader.crossOrigin = "anonymous";
+
+    loader.onload = function(){
+        console.log("tiny-loader loaded.");
+        if (typeof tinyLoader !== "undefined") {
+            tinyLoader.load();
+        } else {
+            console.error("tinyLoader not found.");
+        }
+    };
+
+    loader.onerror = function(e){
+        console.error("tiny-loader failed:", e);
+    };
+
+    document.body.appendChild(loader);
+
+} catch (err) {
+    console.error("BOOT ERROR:", err);
+}
+
+})();
+</script>
+
+</body>
+</html>
